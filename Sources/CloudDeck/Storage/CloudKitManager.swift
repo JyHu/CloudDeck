@@ -41,13 +41,13 @@ public class CloudKitManager {
     /// - Parameter containerID: iCloud Container 标识符
     ///   格式："iCloud.com.yourcompany.yourapp"
     ///   需要在 Xcode Capabilities 中配置 iCloud 并创建对应的 Container
-    internal init(containerID: String) {
+    public init(containerID: String) {
         self.container = CKContainer(identifier: containerID)
         self.privateDB = container.privateCloudDatabase
     }
     
     /// 使用默认 Container 初始化（使用 entitlements 中声明的第一个 container）
-    internal init() {
+    public init() {
         self.container = CKContainer.default()
         self.privateDB = container.privateCloudDatabase
     }
