@@ -243,6 +243,113 @@ final class MockDB: GRDBStoreProtocol {
 5. **尽早调用 `setup()`** — 应用启动后立即执行，创建 Zone 和 Subscription
 6. **注册远程通知** — 收到推送后转发给 `handleRemoteNotification` 实现自动同步
 
+## 声明式数据库查询（@Query）
+
+CloudDeck 提供数据库实时观察的基础设施（`DBObserver`、`DBRequest`、内置 Requests），使用方只需在自己项目中创建一个约 10 行的 property wrapper 即可获得类似 `@FetchRequest`（Core Data）/ `@Query`（SwiftData）的体验。
+
+### 第一步：在你的项目中创建 property wrapper
+
+```swift
+import CloudDeck
+import SwiftUI
+
+@MainActor
+@propertyWrapper
+struct Query<Request: DBRequest>: DynamicProperty {
+    @State private var observer: DBObserver<Request.Value>
+
+    var wrappedValue: Request.Value { observer.value }
+
+    init(_ request: Request, default defaultValue: Request.Value) {
+        _observer = State(initialValue: DBObserver(
+            dbQueue: AppCenter.shared.coordinator.db.queue,  // 替换为你的 dbQueue 来源
+            defaultValue: defaultValue
+        ) { db in try request.fetch(db) })
+    }
+}
+```
+
+### 第二步：在视图中使用
+
+```swift
+// 使用内置 FetchAll
+@Query(FetchAll<Tag>(), default: []) var allTags
+
+// 带条件过滤 + 排序
+@Query(FetchAll<Task> {
+    $0.filter(Task.Columns.isDeleted == false).order(Task.Columns.createAt.desc)
+}, default: []) var activeTasks
+
+// 使用内置 FetchOne
+@Query(FetchOne<Task>(key: "task-id"), default: nil) var task
+
+// 使用内置 FetchCount
+@Query(FetchCount<Task>(), default: 0) var totalTasks
+@Query(FetchCount<Task> {
+    $0.filter(Task.Columns.isCompleted == false)
+}, default: 0) var incompleteCount
+
+// 使用内置 Exists
+@Query(Exists<Task> {
+    $0.filter(Task.Columns.isCompleted == false)
+}, default: false) var hasIncompleteTasks
+
+// 自定义查询请求
+@Query(GameStatsRequest(gameId: "minesweeper"), default: nil) var stats
+
+// 在 init 中动态构造
+struct GameDetailView: View {
+    @Query<GameStatsRequest> var stats: GameStats?
+
+    init(gameId: String) {
+        _stats = Query(GameStatsRequest(gameId: gameId), default: nil)
+    }
+}
+```
+
+### 自定义查询请求
+
+实现 `DBRequest` 协议：
+
+```swift
+struct ActiveTasksRequest: DBRequest {
+    func fetch(_ db: Database) throws -> [Task] {
+        try Task
+            .filter(Task.Columns.isDeleted == false)
+            .order(Task.Columns.createAt.desc)
+            .fetchAll(db)
+    }
+}
+```
+
+### 内置请求
+
+| 请求 | 返回类型 | 说明 |
+|------|----------|------|
+| `FetchAll<T>()` | `[T]` | 获取全部记录 |
+| `FetchAll<T> { ... }` | `[T]` | 带条件获取记录（filter/order/limit） |
+| `FetchOne<T>(key:)` | `T?` | 按主键查询单条记录 |
+| `FetchOne<T> { ... }` | `T?` | 自定义条件查询单条记录 |
+| `FetchCount<T>()` | `Int` | 全表记录数 |
+| `FetchCount<T> { ... }` | `Int` | 满足条件的记录数 |
+| `Exists<T>(key:)` | `Bool` | 按主键检查记录是否存在 |
+| `Exists<T> { ... }` | `Bool` | 自定义条件检查记录是否存在 |
+
+### 工作原理
+
+1. 你的 `@Query` wrapper 在视图初始化时创建 `DBObserver`
+2. `DBObserver` 通过 GRDB `ValueObservation` 订阅数据库变化
+3. 当相关表发生写入/更新/删除时，查询自动重新执行
+4. 新值通过 `withAnimation` 更新，触发 SwiftUI 视图刷新
+
+### 设计理念
+
+CloudDeck 不提供现成的 `@DBQuery` wrapper，因为：
+- 避免全局可变状态（无需 App 启动时注入配置）
+- 编译时安全（直接引用你的 db 来源，不会 runtime crash）
+- 你可以自由命名（`@Query`、`@DB`、`@Live` ...）
+- 每个项目按自己的 DI 方式提供 `DatabaseQueue`
+
 ## 目录结构
 
 ```
@@ -267,6 +374,8 @@ Sources/CloudDeck/
 │   ├── Definitions.swift              #   类型别名（CKRecordType 等）
 │   └── SyncError.swift                #   统一错误类型
 └── Helpers/                           # 工具与辅助
+    ├── DBQuery.swift                  #   数据库查询基础设施（DBRequest/DBObserver/内置Requests）
+    ├── DebugDBView.swift              #   数据库调试视图（表列表/结构/记录浏览）
     ├── Extensions.swift               #   内部工具方法（toMap 等）
     └── Logger.swift                   #   OSLog 日志分类（cloud/grdb/sync）
 ```
