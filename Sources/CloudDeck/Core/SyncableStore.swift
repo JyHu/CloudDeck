@@ -275,6 +275,11 @@ public extension SyncableStore {
             Logger.grdb.info("[Store] Soft deleted \(models.count) \(ModelType.recordType)(s) in local DB")
         }
     }
+    
+    /// Batch delete records matching a query condition.
+    func deleteAll(where build: (QueryInterfaceRequest<ModelType>) throws -> QueryInterfaceRequest<ModelType>) async throws {
+        try await deleteAll(try fetchAll(where: build(ModelType.all())))
+    }
 
     /// Permanently remove a record from local database.
     @discardableResult
