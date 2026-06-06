@@ -66,7 +66,9 @@ public extension SyncableStore {
     /// Fetch a single record by ID.
     func fetch(id: String) async throws -> ModelType? {
         try await db.queue.read { db in
-            try ModelType.fetchOne(db)
+            try ModelType
+                .filter(Column("id") == id)
+                .fetchOne(db)
         }
     }
 
