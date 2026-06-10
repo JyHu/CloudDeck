@@ -57,10 +57,10 @@ public class TaskCenter {
             containerID: "iCloud.com.example.taskapp"
         )
 
-        // 3. 创建各个 Store（共享 db 和 cloud 实例）
-        taskStore = TaskStore(db: coordinator.db, cloud: coordinator.cloud)
-        tagStore = TagStore(db: coordinator.db, cloud: coordinator.cloud)
-        taskTagStore = TaskTagStore(db: coordinator.db, cloud: coordinator.cloud)
+        // 3. 创建各个 Store（共享 db、cloud 和 syncConfiguration 实例）
+        taskStore = TaskStore(db: coordinator.db, cloud: coordinator.cloud, syncConfiguration: coordinator.syncConfiguration)
+        tagStore = TagStore(db: coordinator.db, cloud: coordinator.cloud, syncConfiguration: coordinator.syncConfiguration)
+        taskTagStore = TaskTagStore(db: coordinator.db, cloud: coordinator.cloud, syncConfiguration: coordinator.syncConfiguration)
 
         // 4. 注册所有 Store 并执行数据库迁移（同步操作）
         //    这一步确保所有表在任何查询之前就已创建

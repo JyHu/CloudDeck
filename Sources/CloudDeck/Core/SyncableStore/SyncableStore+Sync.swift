@@ -1,305 +1,14 @@
 //
-//  SyncableStore.swift
+//  SyncableStore+Sync.swift
 //  CloudDeck
 //
+//  Created by hujinyou on 2026/6/10.
+//
 
+import OSLog
 import GRDB
 import CloudKit
-import OSLog
 
-/// Protocol for per-model stores that handle CRUD and sync operations.
-///
-/// Each data model type gets its own store conforming to this protocol.
-/// The store manages both local persistence and cloud synchronization.
-///
-/// Usage:
-/// ```swift
-/// final class ContactStore: SyncableStore {
-///     typealias ModelType = Contact
-///     let db: GRDBStore
-///     let cloud: CloudKitManager
-///
-///     init(db: GRDBStore, cloud: CloudKitManager) {
-///         self.db = db
-///         self.cloud = cloud
-///     }
-///
-///     func registerMigrations(_ migrator: inout DatabaseMigrator) {
-///         migrator.registerMigration("contacts_v1") { db in
-///             try db.create(table: "contact") { t in
-///                 t.primaryKey("id", .text)
-///                 t.column("name", .text).notNull()
-///                 t.column("createAt", .datetime).notNull()
-///                 t.column("updateAt", .datetime).notNull()
-///                 t.column("isDeleted", .boolean).notNull().defaults(to: false)
-///                 t.column("isSynced", .boolean).notNull().defaults(to: false)
-///             }
-///         }
-///     }
-/// }
-/// ```
-public protocol SyncableStore: Sendable {
-    associatedtype ModelType: SyncableProtocol
-
-    var db: GRDBStore { get }
-    var cloud: CloudKitManager { get }
-
-    init(db: GRDBStore, cloud: CloudKitManager)
-
-    /// Register database table creation/migration logic.
-    func registerMigrations(_ migrator: inout DatabaseMigrator)
-}
-
-public extension SyncableStore {
-    var zoneName: CKRecordZone.Name {
-        ModelType.zoneName
-    }
-
-    var recordType: CKRecordType {
-        ModelType.recordType
-    }
-}
-
-// MARK: - CRUD Operations
-
-public extension SyncableStore {
-    /// Fetch a single record by ID.
-    func fetch(id: String) async throws -> ModelType? {
-        try await db.queue.read { db in
-            try ModelType
-                .filter(Column("id") == id)
-                .fetchOne(db)
-        }
-    }
-
-    /// Fetch all records.
-    func fetchAll() async throws -> [ModelType] {
-        try await db.queue.read { db in
-            try ModelType.fetchAll(db)
-        }
-    }
-
-    /// Fetch records matching a query condition.
-    func fetchAll(where condition: QueryInterfaceRequest<ModelType>) async throws -> [ModelType] {
-        try await db.queue.read { db in
-            try condition.fetchAll(db)
-        }
-    }
-
-    /// Save a single record (Cloud-First strategy).
-    func save(_ model: ModelType) async throws {
-        var mutableModel = model
-
-        do {
-            let record = model.toCKRecord(in: ModelType.zoneID)
-            let (saveResults, _) = try await cloud.modify(saving: [record], deleting: [])
-
-            /// 检查单条记录的实际结果（atomically: false 时，单条失败不会抛异常）
-            let recordID = record.recordID
-            if let result = saveResults[recordID] {
-                switch result {
-                case .success(let savedRecord):
-                    mutableModel.markSynced()
-                    // 使用服务器返回的时间更新 updateAt
-                    if let serverDate = savedRecord.modificationDate {
-                        mutableModel.updateAt = serverDate
-                    }
-                    Logger.cloud.info("[Store] \(ModelType.recordType) (id: \(model.id)) synced to cloud")
-                case .failure(let recordError):
-                    mutableModel.markModified()
-                    Logger.cloud.error("[Store] Cloud save per-record failed for \(ModelType.recordType) (id: \(model.id)): \(recordError)")
-                }
-            } else {
-                // 没有对应结果，标记为已同步（不应该发生）
-                mutableModel.markSynced()
-                Logger.cloud.warning("[Store] No per-record result for \(ModelType.recordType) (id: \(model.id)), marking as synced")
-            }
-        } catch {
-            /// 如果同步失败（系统级错误：网络、无账号等），则标记为已经修改，即未同步
-            mutableModel.markModified()
-            Logger.cloud.error("[Store] Cloud sync failed for \(ModelType.recordType) (id: \(model.id)): \(error)")
-        }
-
-        let newModel = mutableModel
-
-        try await db.queue.write { db in
-            try newModel.save(db)
-        }
-
-        Logger.grdb.debug("[Store] \(ModelType.recordType) (id: \(model.id)) saved to local DB (synced: \(newModel.isSynced))")
-    }
-
-    /// Batch save records (Cloud-First strategy).
-    func saveAll(_ models: [ModelType]) async throws {
-        var mutableModels = models
-        
-        Logger.sync.info("[Store] Batch saving \(models.count) \(ModelType.recordType)(s) ...") 
-
-        do {
-            let records = mutableModels.map { $0.toCKRecord(in: ModelType.zoneID) }
-            let (saveResults, _) = try await cloud.modify(saving: records, deleting: [])
-
-            for i in 0..<mutableModels.count {
-                let recordID = records[i].recordID
-                if let result = saveResults[recordID] {
-                    switch result {
-                    case .success(let savedRecord):
-                        mutableModels[i].markSynced()
-                        if let serverDate = savedRecord.modificationDate {
-                            mutableModels[i].updateAt = serverDate
-                        }
-                        Logger.cloud.info("[Store] \(ModelType.recordType) (id: \(mutableModels[i].id)) synced to cloud")
-                    case .failure(_):
-                        mutableModels[i].markModified()
-                        Logger.cloud.error("[Store] Cloud save per-record failed for \(ModelType.recordType) (id: \(mutableModels[i].id))")
-                    }
-                } else {
-                    mutableModels[i].markSynced()
-                    Logger.cloud.warning("[Store] No per-record result for \(ModelType.recordType) (id: \(mutableModels[i].id)), marking as synced")
-                }
-            }
-        } catch {
-            for i in 0..<mutableModels.count {
-                mutableModels[i].markModified()
-            }
-            Logger.cloud.error("[Store] Batch cloud sync failed for \(models.count) \(ModelType.recordType)(s): \(error)")
-        }
-
-        let newModels = mutableModels
-        try await db.queue.write { db in
-            for model in newModels {
-                try model.save(db)
-            }
-        }
-
-        Logger.grdb.info("[Store] Batch saved \(newModels.count) \(ModelType.recordType)(s) to local DB")
-    }
-
-    /// Delete a record by ID (Cloud-First, falls back to soft delete).
-    func delete(_ id: String) async throws {
-        Logger.sync.info("[Store] Deleting \(ModelType.recordType) (id: \(id)) ...")
-        do {
-            let recordID = ModelType.recordID(with: id)
-            _ = try await cloud.modify(saving: [], deleting: [recordID])
-            
-            try await permanentlyDelete(id: id)
-            Logger.sync.info("[Store] \(ModelType.recordType) (id: \(id)) permanently deleted (cloud + local)")
-        } catch {
-            Logger.cloud.error("[Store] Cloud delete failed for \(ModelType.recordType) (id: \(id)): \(error), falling back to soft delete")
-            guard var model = try await fetch(id: id) else {
-                throw SyncError.modelNotFound(id: id)
-            }
-            
-            model.markDeleted()
-            
-            let newModel = model
-            
-            try await db.queue.write {
-                try newModel.save($0)
-            }
-            Logger.grdb.debug("[Store] \(ModelType.recordType) (id: \(id)) soft deleted in local DB")
-        }
-    }
-
-    /// Batch delete by IDs.
-    func deleteAll(_ ids: [String]) async throws {
-        Logger.sync.info("[Store] Batch deleting \(ids.count) \(ModelType.recordType)(s) ...")
-        do {
-            let recordIDs = ids.map { ModelType.recordID(with: $0) }
-            _ = try await cloud.modify(saving: [], deleting: recordIDs)
-            
-            try await permanentlyDelete(ids: ids)
-            Logger.sync.info("[Store] Batch permanently deleted \(ids.count) \(ModelType.recordType)(s)")
-        } catch {
-            Logger.cloud.error("[Store] Batch cloud delete failed for \(ids.count) \(ModelType.recordType)(s): \(error), falling back to soft delete")
-            var models = try await fetchAll(where: ModelType.filter(ids.contains(Column("id"))))
-            
-            for i in 0..<models.count {
-                models[i].markDeleted()
-            }
-            
-            let newModels = models
-            
-            try await db.queue.write {
-                for model in newModels {
-                    try model.save($0)
-                }
-            }
-            Logger.grdb.info("[Store] Soft deleted \(models.count) \(ModelType.recordType)(s) in local DB")
-        }
-    }
-
-    /// Delete a model instance (Cloud-First, falls back to soft delete).
-    func delete(_ model: ModelType) async throws {
-        Logger.sync.info("[Store] Deleting \(ModelType.recordType) model (id: \(model.id)) ...")
-        do {
-            _ = try await cloud.modify(saving: [], deleting: [ModelType.recordID(with: model.id)])
-            
-            try await permanentlyDelete(id: model.id)
-            Logger.sync.info("[Store] \(ModelType.recordType) (id: \(model.id)) permanently deleted")
-        } catch {
-            Logger.cloud.error("[Store] Cloud delete failed for \(ModelType.recordType) (id: \(model.id)): \(error)")
-            var model = model
-            model.markDeleted()
-            
-            let newModel = model
-            
-            try await db.queue.write {
-                try newModel.save($0)
-            }
-            Logger.grdb.debug("[Store] \(ModelType.recordType) (id: \(model.id)) soft deleted in local DB")
-        }
-    }
-
-    /// Batch delete model instances.
-    func deleteAll(_ models: [ModelType]) async throws {
-        Logger.sync.info("[Store] Batch deleting \(models.count) \(ModelType.recordType) model(s) ...")
-        do {
-            let recordIDs = models.map({ ModelType.recordID(with: $0.id) })
-            _ = try await cloud.modify(saving: [], deleting: recordIDs)
-            try await permanentlyDelete(ids: models.map({ $0.id }))
-            Logger.sync.info("[Store] Batch permanently deleted \(models.count) \(ModelType.recordType)(s)")
-        } catch {
-            Logger.cloud.error("[Store] Batch cloud delete failed: \(error)")
-            var models = models
-            
-            for i in 0..<models.count {
-                models[i].markDeleted()
-            }
-            
-            let newModels = models
-            
-            try await db.queue.write {
-                for model in newModels {
-                    try model.save($0)
-                }
-            }
-            Logger.grdb.info("[Store] Soft deleted \(models.count) \(ModelType.recordType)(s) in local DB")
-        }
-    }
-    
-    /// Batch delete records matching a query condition.
-    func deleteAll(where build: (QueryInterfaceRequest<ModelType>) throws -> QueryInterfaceRequest<ModelType>) async throws {
-        try await deleteAll(try fetchAll(where: build(ModelType.all())))
-    }
-
-    /// Permanently remove a record from local database.
-    @discardableResult
-    func permanentlyDelete(id: String) async throws -> Bool {
-        try await db.queue.write { db in
-            try ModelType.deleteOne(db, key: id)
-        }
-    }
-
-    @discardableResult
-    func permanentlyDelete(ids: [String]) async throws -> Int {
-        try await db.queue.write { db in
-            try ModelType.deleteAll(db, keys: ids)
-        }
-    }
-}
-
-// MARK: - 同步操作
 extension SyncableStore {
     /// 将云端的变动数据同步到本地数据库
     ///
@@ -345,7 +54,7 @@ extension SyncableStore {
     ///   - records: 从云端拉取的变动数据列表（新增或修改的记录）
     ///   - deletions: 从云端拉取的删除记录列表
     ///
-    /// - Throws: 
+    /// - Throws:
     ///   - 数据库错误（查询或写入失败）
     ///   - 数据转换错误（CKRecord 转 Model 失败）
     func updateChanged(records: [CKRecord], deletions: [CKDatabase.RecordZoneChange.Deletion]) async throws {
@@ -357,7 +66,7 @@ extension SyncableStore {
         let locals = try await db.queue.read { db in
             let ids = records.map { $0.recordID.recordName }
             return try ModelType
-                .filter(ids.contains(Column("id")))
+                .filter(ids.contains(Column.Basic.id))
                 .fetchAll(db)
         }
         
@@ -469,7 +178,7 @@ extension SyncableStore {
             // 步骤4: 处理删除操作
             // ========================================
             let deletedCount = try ModelType
-                .filter(deletionIDs.contains(Column("id")))
+                .filter(deletionIDs.contains(Column.Basic.id))
                 .deleteAll(db)
             
             if deletedCount > 0 {
@@ -542,6 +251,12 @@ extension SyncableStore {
     /// ```
     @discardableResult
     func pushToCloud(pullFirst: Bool = true, retryOnConflict: Bool = true) async throws -> SyncResult {
+        // 同步关闭时直接返回
+        guard syncConfiguration.isSyncEnabled else {
+            Logger.sync.info("[Store] pushToCloud skipped for \(ModelType.recordType) (sync disabled)")
+            return SyncResult(saved: 0, deleted: 0, failed: 0)
+        }
+
         // ========================================
         // 步骤1: 推送前先拉取最新数据，在本地解决冲突
         // ========================================
@@ -652,7 +367,7 @@ extension SyncableStore {
     /// 缺点：每次都拉取全量数据，网络开销较大
     /// 未来可优化：使用 change token 实现增量同步，只拉取自上次以来的变更
     ///
-    /// - Throws: 
+    /// - Throws:
     ///   - CloudKit 错误（网络、权限等）
     ///   - 数据转换错误（record 转 model 失败）
     ///   - 数据库错误（保存到本地失败）
@@ -682,7 +397,7 @@ extension SyncableStore {
         //
         // modificationResultsByID 的结构：
         // [CKRecord.ID: Result<CKDatabase.RecordZoneChange.Modification, Error>]
-        // 
+        //
         // 处理步骤：
         // 1. compactMapValues: 提取成功的记录（忽略失败的）
         // 2. .values: 获取所有记录
@@ -833,7 +548,7 @@ extension SyncableStore {
                     // ====================================
                     // 检查是否是 serverRecordChanged 错误
                     // 这是一个"可重试"的错误，说明服务器有新版本
-                    if let ckError = error as? CKError, 
+                    if let ckError = error as? CKError,
                        ckError.code == .serverRecordChanged {
                         // 警告级别：这是预期内的冲突，不是严重错误
                         // 调用者会根据 retryOnConflict 参数决定是否重试
@@ -875,7 +590,7 @@ extension SyncableStore {
                     // ====================================
                     // serverRecordChanged：服务器记录已被修改或已删除
                     // 可能原因：其他设备也尝试删除，或者恢复了数据
-                    if let ckError = error as? CKError, 
+                    if let ckError = error as? CKError,
                        ckError.code == .serverRecordChanged {
                         Logger.cloud.warning("Server record changed for \(recordID.recordName), will retry")
                     } else {

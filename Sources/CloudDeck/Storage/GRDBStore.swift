@@ -30,7 +30,9 @@ import CloudKit
 /// await db.cacheCKServerChangeToken(token, for: "subscription_id")
 /// let token = await db.queryCKServerChangeToken(for: "subscription_id")
 /// ```
-public class GRDBStore {
+// @unchecked Sendable: Only property is `let queue: DatabaseQueue` which is itself Sendable
+// (DatabaseQueue serializes all access internally).
+public class GRDBStore: @unchecked Sendable {
     /// GRDB 数据库队列，管理对 SQLite 文件的串行访问
     /// 所有数据库操作（读、写）都通过这个队列执行
     public let queue: DatabaseQueue

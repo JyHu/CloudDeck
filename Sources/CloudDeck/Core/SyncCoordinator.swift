@@ -55,7 +55,9 @@ import OSLog
 /// // 处理远程通知
 /// try await coordinator.handleRemoteNotification(notification)
 /// ```
-public class SyncCoordinator {
+// @unchecked Sendable: Thread safety managed via NSLock for mutable state (deferredPushTask).
+// Dictionary properties (stores, configs) are only mutated during single-threaded setup phase.
+public class SyncCoordinator: @unchecked Sendable {
     /// Zone 配置信息
     ///
     /// **用途**：
@@ -85,6 +87,21 @@ public class SyncCoordinator {
             self.subscriptionID = zoneName + "_subscription"
         }
     }
+
+    /// 同步配置（运行时可修改）
+    ///
+    /// 控制是否启用 CloudKit 同步、是否后台执行等行为。
+    /// 可以在应用运行期间动态修改，立即生效。
+    ///
+    /// ```swift
+    /// coordinator.syncConfiguration.isSyncEnabled = false  // 关闭同步
+    /// coordinator.syncConfiguration.performSyncInBackground = true  // 后台同步
+    /// ```
+    public let syncConfiguration: SyncConfiguration
+
+    /// 后台同步失败时的延迟重试 Task（去抖动：多个失败只触发一次重试）
+    private var deferredPushTask: Task<Void, Never>?
+    private let deferredPushLock = NSLock()
 
     /// 本地数据库管理器
     /// 所有 Store 共享同一个数据库连接
@@ -123,15 +140,17 @@ public class SyncCoordinator {
     ///     格式："iCloud.com.yourcompany.yourapp"
     ///     需要在 Xcode Capabilities 中配置
     /// - Throws: 数据库创建失败时的错误
-    public init(databasePath: String, containerID: String) throws {
-        self.cloud = CloudKitManager(containerID: containerID)
+    public init(databasePath: String, containerID: String, configuration: SyncConfiguration = SyncConfiguration()) throws {
+        self.cloud = CloudKitManager(containerID: containerID, policy: configuration.policy)
         self.db = try GRDBStore(path: databasePath)
+        self.syncConfiguration = configuration
     }
 
     /// 使用默认 CloudKit Container 初始化
-    public init(databasePath: String) throws {
-        self.cloud = CloudKitManager()
+    public init(databasePath: String, configuration: SyncConfiguration = SyncConfiguration()) throws {
+        self.cloud = CloudKitManager(policy: configuration.policy)
         self.db = try GRDBStore(path: databasePath)
+        self.syncConfiguration = configuration
     }
 
     /// 完成初始化设置
@@ -159,12 +178,30 @@ public class SyncCoordinator {
     /// - Subscription 创建失败 → 记录日志，不抛出异常
     ///
     /// - Throws: 数据库迁移失败或 CloudKit 网络错误
+    /// 完成云端初始化（需要先调用 registerStoresAndMigrate）
+    ///
+    /// 检查并创建 Zones 和 Subscriptions，完成后标记云端就绪并推送本地待同步数据。
+    public func setup() async throws {
+        guard !stores.isEmpty else {
+            Logger.sync.error("[SyncCoordinator] setup() called but no stores registered. Call registerStoresAndMigrate first.")
+            return
+        }
+        
+        try await checkZones()
+        try await checkSubscriptions()
+
+        // Mark cloud as ready and push any locally-queued data
+        syncConfiguration.isCloudReady = true
+        Logger.sync.info("[SyncCoordinator] Cloud ready, pushing pending changes...")
+        _ = try? await pushAllToCloud()
+    }
+
+    /// 注册 Stores 并完成云端初始化（一步到位）
     public func setup(with stores: [any SyncableStore]) async throws {
         if self.stores.isEmpty {
             try registerStoresAndMigrate(stores)
         }
-        try await checkZones()
-        try await checkSubscriptions()
+        try await setup()
     }
 
     /// 同步方法：注册所有 Store 并执行数据库迁移
@@ -358,6 +395,11 @@ public extension SyncCoordinator {
     /// - Throws: 任何一个 Store 同步失败时抛出 SyncError
     @discardableResult
     func pushAllToCloud() async throws -> [CKRecordType: SyncResult] {
+        guard syncConfiguration.isSyncEnabled else {
+            Logger.sync.info("[SyncCoordinator] pushAllToCloud skipped (sync disabled)")
+            return [:]
+        }
+
         var results: [CKRecordType: SyncResult] = [:]
 
         // 遍历所有 Store，逐个同步
@@ -376,13 +418,38 @@ public extension SyncCoordinator {
         return results
     }
 
+    /// 后台同步失败后，延迟 30 秒尝试一次 `pushAllToCloud` 补偿。
+    ///
+    /// 多次调用会去抖动：取消前一次未执行的延迟任务，只保留最后一次。
+    /// 如果补偿仍然失败，数据保留在本地（`isSynced = false`），
+    /// 等待下次应用回前台或用户手动触发同步。
+    nonisolated func scheduleDeferredPush() {
+        deferredPushLock.withLock {
+            deferredPushTask?.cancel()
+            deferredPushTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 30_000_000_000) // 30s
+                guard let self, !Task.isCancelled else { return }
+                guard self.syncConfiguration.isSyncEnabled else { return }
+                Logger.sync.info("[SyncCoordinator] Executing deferred push after background sync failure...")
+                _ = try? await self.pushAllToCloud()
+            }
+        }
+    }
+
     /// 拉取所有订阅 Zone 的云端数据到本地
     func pullAllRecordFromCloud() async throws {
+        guard syncConfiguration.isSyncEnabled else {
+            Logger.sync.info("[SyncCoordinator] pullAllRecordFromCloud skipped (sync disabled)")
+            return
+        }
+        
         Logger.sync.info("[SyncCoordinator] pullAllRecordFromCloud: \(self.subscriptionToConfigs.count) subscription(s) to process")
+        
         for (subscriptionID, config) in subscriptionToConfigs {
             Logger.sync.info("[SyncCoordinator] Pulling records for subscription: \(subscriptionID), zone: \(config.zoneName)")
             try await pullRecords(of: subscriptionID)
         }
+        
         Logger.sync.info("[SyncCoordinator] pullAllRecordFromCloud completed")
     }
 
@@ -428,6 +495,41 @@ public extension SyncCoordinator {
     /// ```
     func handleRemoteNotification(_ notification: CKNotification) async throws {
         try await pullRecords(with: notification)
+    }
+
+    /// 检查指定 Store 是否有未同步到 CloudKit 的数据
+    ///
+    /// 查询条件：`isSynced == false`，表示有本地修改尚未推送到云端。
+    ///
+    /// **使用示例**：
+    /// ```swift
+    /// let hasPending = try await coordinator.hasPendingChanges(for: ContactStore.self)
+    /// if hasPending {
+    ///     // 提示用户有未同步的数据
+    /// }
+    /// ```
+    ///
+    /// - Parameter storeType: 要检查的 Store 类型
+    /// - Returns: `true` 表示有未同步数据，`false` 表示全部已同步
+    func hasPendingChanges<T: SyncableStore>(for storeType: T.Type) async throws -> Bool {
+        guard let store = store(for: storeType) else {
+            return false
+        }
+        
+        return try await store.hasPendingChanges()
+    }
+
+    /// 检查所有 Store 是否有未同步到 CloudKit 的数据
+    ///
+    /// - Returns: `true` 表示任意一个 Store 有未同步数据
+    func hasAnyPendingChanges() async throws -> Bool {
+        for (_, store) in stores {
+            if try await store.hasPendingChanges() {
+                return true
+            }
+        }
+        
+        return false
     }
 
     private func pullRecords(of subscriptionID: CKSubscription.ID) async throws {

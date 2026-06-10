@@ -27,7 +27,8 @@ import OSLog
 ///     deleting: [recordID1]
 /// )
 /// ```
-public class CloudKitManager {
+// @unchecked Sendable: All stored properties are immutable (`let`), no mutable state exists.
+public class CloudKitManager: @unchecked Sendable {
     /// CloudKit Container，代表应用的 iCloud 容器
     /// 包含所有 Zone、Subscription、Record 等资源
     public let container: CKContainer
@@ -37,19 +38,24 @@ public class CloudKitManager {
     /// 相对于 Shared Database（共享）和 Public Database（公开）
     public let privateDB: CKDatabase
     
+    /// 数据保存策略
+    public let policy: CloudSavingPolicy
+    
     /// 初始化 CloudKit 管理器
     /// - Parameter containerID: iCloud Container 标识符
     ///   格式："iCloud.com.yourcompany.yourapp"
     ///   需要在 Xcode Capabilities 中配置 iCloud 并创建对应的 Container
-    public init(containerID: String) {
+    public init(containerID: String, policy: CloudSavingPolicy = .changedKeys) {
         self.container = CKContainer(identifier: containerID)
         self.privateDB = container.privateCloudDatabase
+        self.policy = policy
     }
     
     /// 使用默认 Container 初始化（使用 entitlements 中声明的第一个 container）
-    public init() {
+    public init(policy: CloudSavingPolicy = .changedKeys) {
         self.container = CKContainer.default()
         self.privateDB = container.privateCloudDatabase
+        self.policy = policy
     }
 }
 
@@ -59,10 +65,10 @@ public extension CloudKitManager {
     /// 这是 CloudKit 的核心操作，支持在一个请求中同时保存和删除多条记录。
     ///
     /// **关键参数**：
-    /// - `savePolicy: .ifServerRecordUnchanged`
-    ///   只有当服务器上的记录未被修改时，才接受本次保存
-    ///   如果服务器记录已被其他设备修改，返回 serverRecordChanged 错误
-    ///   这是实现冲突检测的基础
+    /// - `savePolicy: .changedKeys`
+    ///   只上传本地修改过的字段，服务器端未修改的字段保持不变。
+    ///   如果记录不存在则创建，已存在则更新（upsert 语义）。
+    ///   适合个人数据同步场景，模型不存储 CKRecord 系统字段（recordChangeTag）。
     ///
     /// - `atomically: false`
     ///   非原子性操作：部分记录成功，部分记录失败是允许的
@@ -81,7 +87,6 @@ public extension CloudKitManager {
     ///         // 保存成功，record 包含服务器返回的最新数据
     ///     case .failure(let error):
     ///         // 保存失败，根据 error 类型决定如何处理
-    ///         // CKError.serverRecordChanged: 发生冲突，需要重新拉取并合并
     ///         // CKError.networkUnavailable: 网络问题，可以重试
     ///     }
     /// }
@@ -96,7 +101,7 @@ public extension CloudKitManager {
         try await privateDB.modifyRecords(
             saving: saving,
             deleting: deleting,
-            savePolicy: .ifServerRecordUnchanged,
+            savePolicy: policy.ckpolicy,
             atomically: false
         )
     }

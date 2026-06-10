@@ -15,10 +15,12 @@ public class TaskStore: SyncableStore, @unchecked Sendable {
 
     public let db: GRDBStore
     public let cloud: CloudKitManager
+    public let syncConfiguration: SyncConfiguration
 
-    public required init(db: GRDBStore, cloud: CloudKitManager) {
+    public required init(db: GRDBStore, cloud: CloudKitManager, syncConfiguration: SyncConfiguration) {
         self.db = db
         self.cloud = cloud
+        self.syncConfiguration = syncConfiguration
     }
 
     // MARK: - 注册数据库迁移
