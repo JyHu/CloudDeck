@@ -278,7 +278,11 @@ public final class DBObserver<Value: Sendable> {
             onChange: { [weak self] newValue in
                 guard let self else { return }
 
-                withAnimation {
+                if self.hasReceivedInitialValue {
+                    withAnimation {
+                        self.value = newValue
+                    }
+                } else {
                     self.value = newValue
                     self.hasReceivedInitialValue = true
                 }
