@@ -230,6 +230,7 @@ public struct FetchCount<T: FetchableRecord & PersistableRecord>: DBRequest {
 ///     @State private var observer: DBObserver<Request.Value>
 ///
 ///     var wrappedValue: Request.Value { observer.value }
+///     var projectedValue: DBObserver<Request.Value> { observer }
 ///
 ///     init(_ request: Request, default defaultValue: Request.Value) {
 ///         _observer = State(initialValue: DBObserver(
@@ -244,6 +245,13 @@ public struct FetchCount<T: FetchableRecord & PersistableRecord>: DBRequest {
 public final class DBObserver<Value: Sendable> {
     /// 当前观察到的最新值，数据库变化时自动更新。
     public var value: Value
+    
+    /// 当前数据有没有更新过，第一次更新以后就会被设置为true，比如使用的时候：
+    /// @DBQuery(xxxx) var results
+    /// 那么在业务中可以直接监听这个属性的变化：
+    /// if $results.hasReceivedInitialValue {}
+    /// 来处理数据初次加载的状态变动
+    public var hasReceivedInitialValue: Bool = false
 
     private var cancellable: AnyDatabaseCancellable?
 
@@ -261,15 +269,18 @@ public final class DBObserver<Value: Sendable> {
         self.value = defaultValue
 
         let obs = ValueObservation.tracking(observation)
-
         self.cancellable = obs.start(
             in: dbQueue,
             onError: { error in
                 print("DBObserver error:", error)
+                self.hasReceivedInitialValue = true
             },
             onChange: { [weak self] newValue in
+                guard let self else { return }
+
                 withAnimation {
-                    self?.value = newValue
+                    self.value = newValue
+                    self.hasReceivedInitialValue = true
                 }
             }
         )

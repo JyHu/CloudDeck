@@ -193,7 +193,6 @@ public class SyncCoordinator: @unchecked Sendable {
         // Mark cloud as ready and push any locally-queued data
         syncConfiguration.isCloudReady = true
         Logger.sync.info("[SyncCoordinator] Cloud ready, pushing pending changes...")
-        _ = try? await pushAllToCloud()
     }
 
     /// 注册 Stores 并完成云端初始化（一步到位）
@@ -608,5 +607,49 @@ public extension SyncCoordinator {
                 Logger.sync.warning("[SyncCoordinator] No store found for recordType: \(recordType)")
             }
         }
+    }
+}
+
+public extension SyncCoordinator {
+    enum Res {
+        case completed
+        case pullFailed(_ error: Error)
+        case pushFailed(_ error: Error)
+        case bothFailed(_ pullError: Error, _ pushError: Error)
+    }
+    
+    /// 同步数据，将本数据同步到云端，将云端数据同步到本地
+    @discardableResult
+    func sync() async throws -> Res {
+        var pullError: Error?
+        var pushError: Error?
+        
+        do {
+            /// 先拉取云端的数据变动
+            try await pullAllRecordFromCloud()
+        } catch {
+            pullError = error
+        }
+        
+        do {
+            /// 然后推送本地数据到云端
+            _ = try await pushAllToCloud()
+        } catch {
+            pushError = error
+        }
+        
+        if let pullError {
+            if let pushError {
+                return .bothFailed(pullError, pushError)
+            }
+            
+            return .pullFailed(pullError)
+        }
+        
+        if let pushError {
+            return .pushFailed(pushError)
+        }
+        
+        return .completed
     }
 }
