@@ -275,15 +275,15 @@ private extension SyncCoordinator {
         let zones = try await cloud.privateDB.allRecordZones()
 
         // 提取本地需要的 Zone 名称
-        let existsNames = Set(stores.values.map { $0.zoneName })
+        let existsNames = Set(stores.values.map { $0.zoneID })
 
         // 按名称分组已存在的 Zones（方便查找）
-        let groupdZones = zones.toMap { $0.zoneID.zoneName }
+        let groupdZones = zones.toMap { $0.zoneID }
 
         // 找出需要创建的 Zones（本地需要但云端没有的）
         let newZones = existsNames
             .filter { groupdZones[$0] == nil }
-            .map { CKRecordZone(zoneName: $0) }
+            .map { CKRecordZone(zoneID: $0) }
 
         // 批量创建 Zones
         let (savedResults, _) = try await cloud.privateDB.modifyRecordZones(saving: newZones, deleting: [])

@@ -61,4 +61,8 @@ public extension SyncableStore {
     var recordType: CKRecordType {
         ModelType.recordType
     }
+    
+    var zoneID: CKRecordZone.ID {
+        ModelType.zoneID
+    }
 }

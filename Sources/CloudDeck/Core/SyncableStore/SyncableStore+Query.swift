@@ -63,4 +63,12 @@ public extension SyncableStore {
             try condition.fetchAll(db)
         }
     }
+    
+    func fetchCount(_ isDelete: Bool = false) async throws -> Int {
+        try await db.queue.read { db in
+            try ModelType
+                .filter(Column.Basic.isDeleted == isDelete)
+                .fetchCount(db)
+        }
+    }
 }
