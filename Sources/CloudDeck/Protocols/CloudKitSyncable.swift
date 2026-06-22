@@ -73,7 +73,7 @@ public protocol CloudKitSyncable {
     static var recordType: CKRecordType { get }
 }
 
-extension CloudKitSyncable {
+public extension CloudKitSyncable {
     /// 当前表所在的Zone
     static var zoneName: CKRecordZone.Name {
         CKRecordZone.ID.defaultZoneName
