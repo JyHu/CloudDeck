@@ -181,7 +181,7 @@ public class CDLogCenter {
     ///
     /// 回调在产生日志的线程上同步执行，可能为后台线程；
     /// 代理需保证线程安全，不要在回调中做耗时操作。
-    public weak var delegate: LoggerDelegate?
+    public weak var delegate: CDLoggerDelegate?
     
     /// 是否开启日志输出，
     public var isLogEnable: Bool = true
