@@ -6,7 +6,6 @@
 //
 
 import GRDB
-import OSLog
 import CloudKit
 
 public extension SyncableStore {
@@ -26,12 +25,12 @@ public extension SyncableStore {
             return
         }
 
-        Logger.sync.info("[Store] Batch deleting \(ids.count) \(ModelType.recordType)(s) by id ...")
+        CDLogCenter.sync.info("[Store] Batch deleting \(ids.count) \(ModelType.recordType)(s) by id ...")
 
         let syncEnabled = syncConfiguration.isSyncEnabled
         if !syncEnabled {
             try await permanentlyDelete(ids: ids)
-            Logger.sync.info("[Store] Batch permanently deleted \(ids.count) \(ModelType.recordType)(s) locally (sync disabled)")
+            CDLogCenter.sync.info("[Store] Batch permanently deleted \(ids.count) \(ModelType.recordType)(s) locally (sync disabled)")
             return
         }
 
@@ -44,7 +43,7 @@ public extension SyncableStore {
         }
         
         if models.isEmpty {
-            Logger.sync.info("[Store] No local \(ModelType.recordType) records found for requested ids; skip delete")
+            CDLogCenter.sync.info("[Store] No local \(ModelType.recordType) records found for requested ids; skip delete")
             return
         }
 
@@ -63,21 +62,21 @@ public extension SyncableStore {
         }
 
         let ids = models.map(\.id)
-        Logger.sync.info("[Store] Batch deleting \(ids.count) \(ModelType.recordType)(s) by model ...")
+        CDLogCenter.sync.info("[Store] Batch deleting \(ids.count) \(ModelType.recordType)(s) by model ...")
 
         let syncEnabled = syncConfiguration.isSyncEnabled
         let backgroundSync = syncConfiguration.performSyncInBackground
 
         if !syncEnabled {
             try await permanentlyDelete(ids: ids)
-            Logger.sync.info("[Store] Batch permanently deleted \(ids.count) \(ModelType.recordType)(s) locally (sync disabled)")
+            CDLogCenter.sync.info("[Store] Batch permanently deleted \(ids.count) \(ModelType.recordType)(s) locally (sync disabled)")
             return
         }
 
         // 云端未就绪时必须软删，等待后续同步，避免云端脏数据。
         if !syncConfiguration.isCloudReady {
             try await softDelete(models)
-            Logger.grdb.info("[Store] Soft deleted \(models.count) \(ModelType.recordType)(s) locally (cloud not ready)")
+            CDLogCenter.grdb.info("[Store] Soft deleted \(models.count) \(ModelType.recordType)(s) locally (cloud not ready)")
             return
         }
 
@@ -94,7 +93,7 @@ public extension SyncableStore {
                         for id in ids {
                             let recordID = ModelType.recordID(with: id)
                             guard let result = deleteResults[recordID] else {
-                                Logger.sync.warning("[Store-BG] No cloud delete result for \(ModelType.recordType) (id: \(id)), keeping soft-deleted record")
+                                CDLogCenter.sync.warn("[Store-BG] No cloud delete result for \(ModelType.recordType) (id: \(id)), keeping soft-deleted record")
                                 continue
                             }
 
@@ -127,9 +126,9 @@ public extension SyncableStore {
                         }
                     }
 
-                    Logger.sync.info("[Store-BG] Batch deleted \(ids.count) \(ModelType.recordType)(s) from cloud and hard-deleted locally")
+                    CDLogCenter.sync.info("[Store-BG] Batch deleted \(ids.count) \(ModelType.recordType)(s) from cloud and hard-deleted locally")
                 } catch {
-                    Logger.cloud.error("[Store-BG] Batch cloud delete failed: \(error)")
+                    CDLogCenter.cloud.error("[Store-BG] Batch cloud delete failed: \(error)")
                 }
             }
         } else {
@@ -158,11 +157,11 @@ public extension SyncableStore {
                     try await softDelete(unconfirmedModels)
                 }
 
-                Logger.sync.info("[Store] Cloud-confirmed delete: \(confirmedIDs.count), soft-deleted pending: \(unconfirmedModels.count) for \(ModelType.recordType)")
+                CDLogCenter.sync.info("[Store] Cloud-confirmed delete: \(confirmedIDs.count), soft-deleted pending: \(unconfirmedModels.count) for \(ModelType.recordType)")
             } catch {
-                Logger.cloud.error("[Store] Batch cloud delete failed for \(ids.count) \(ModelType.recordType)(s): \(error), falling back to soft delete")
+                CDLogCenter.cloud.error("[Store] Batch cloud delete failed for \(ids.count) \(ModelType.recordType)(s): \(error), falling back to soft delete")
                 try await softDelete(models)
-                Logger.grdb.info("[Store] Soft deleted \(models.count) \(ModelType.recordType)(s) in local DB")
+                CDLogCenter.grdb.info("[Store] Soft deleted \(models.count) \(ModelType.recordType)(s) in local DB")
             }
         }
     }

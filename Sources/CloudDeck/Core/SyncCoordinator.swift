@@ -5,7 +5,6 @@
 
 import GRDB
 import CloudKit
-import OSLog
 
 /// 同步协调器 - 整个数据同步框架的中心控制器
 ///
@@ -183,7 +182,7 @@ public class SyncCoordinator: @unchecked Sendable {
     /// 检查并创建 Zones 和 Subscriptions，完成后标记云端就绪并推送本地待同步数据。
     public func setup() async throws {
         guard !stores.isEmpty else {
-            Logger.sync.error("[SyncCoordinator] setup() called but no stores registered. Call registerStoresAndMigrate first.")
+            CDLogCenter.sync.error("[SyncCoordinator] setup() called but no stores registered. Call registerStoresAndMigrate first.")
             return
         }
         
@@ -192,7 +191,7 @@ public class SyncCoordinator: @unchecked Sendable {
 
         // Mark cloud as ready and push any locally-queued data
         syncConfiguration.isCloudReady = true
-        Logger.sync.info("[SyncCoordinator] Cloud ready, pushing pending changes...")
+        CDLogCenter.sync.info("[SyncCoordinator] Cloud ready, pushing pending changes...")
     }
 
     /// 注册 Stores 并完成云端初始化（一步到位）
@@ -206,7 +205,7 @@ public class SyncCoordinator: @unchecked Sendable {
     /// 同步方法：注册所有 Store 并执行数据库迁移
     /// 可在初始化时调用，确保数据库表在任何观察之前就已创建
     public func registerStoresAndMigrate(_ stores: [any SyncableStore]) throws {
-        Logger.sync.info("[SyncCoordinator] Registering \(stores.count) store(s) and running migrations...")
+        CDLogCenter.sync.info("[SyncCoordinator] Registering \(stores.count) store(s) and running migrations...")
 
         // 创建所有 Store 并按 recordType 组织
         self.stores = stores.toMap { $0.recordType }
@@ -219,7 +218,7 @@ public class SyncCoordinator: @unchecked Sendable {
         self.subscriptionToConfigs = configs.toMap { $0.subscriptionID }
 
         try registerMigrations()
-        Logger.sync.info("[SyncCoordinator] Stores registered and migrations completed")
+        CDLogCenter.sync.info("[SyncCoordinator] Stores registered and migrations completed")
     }
 }
 
@@ -292,9 +291,9 @@ private extension SyncCoordinator {
         for (zoneID, result) in savedResults {
             switch result {
             case .success:
-                Logger.cloud.info("Create zone successed: \(zoneID.zoneName)")
+                CDLogCenter.cloud.info("Create zone successed: \(zoneID.zoneName)")
             case .failure(let error):
-                Logger.cloud.error("Create zone failed: \(zoneID.zoneName), error: \(error)")
+                CDLogCenter.cloud.error("Create zone failed: \(zoneID.zoneName), error: \(error)")
             }
         }
     }
@@ -345,9 +344,9 @@ private extension SyncCoordinator {
         for (subscriptionID, result) in savedResults {
             switch result {
             case .success:
-                Logger.cloud.info("Create subscription successed: \(subscriptionID)")
+                CDLogCenter.cloud.info("Create subscription successed: \(subscriptionID)")
             case .failure(let error):
-                Logger.cloud.error("Create subscription failed: \(subscriptionID), error: \(error)")
+                CDLogCenter.cloud.error("Create subscription failed: \(subscriptionID), error: \(error)")
             }
         }
     }
@@ -395,7 +394,7 @@ public extension SyncCoordinator {
     @discardableResult
     func pushAllToCloud() async throws -> [CKRecordType: SyncResult] {
         guard syncConfiguration.isSyncEnabled else {
-            Logger.sync.info("[SyncCoordinator] pushAllToCloud skipped (sync disabled)")
+            CDLogCenter.sync.info("[SyncCoordinator] pushAllToCloud skipped (sync disabled)")
             return [:]
         }
 
@@ -407,9 +406,9 @@ public extension SyncCoordinator {
                 let result = try await store.pushToCloud()
                 results[recordType] = result
 
-                Logger.cloud.info("Push \(recordType) to cloud: \(result.saved) saved, \(result.deleted) deleted, \(result.failed) failed")
+                CDLogCenter.cloud.info("Push \(recordType) to cloud: \(result.saved) saved, \(result.deleted) deleted, \(result.failed) failed")
             } catch {
-                Logger.cloud.error("Push \(recordType) to cloud failed: \(error)")
+                CDLogCenter.cloud.error("Push \(recordType) to cloud failed: \(error)")
                 throw SyncError.syncFailed(reason: "Failed to sync \(recordType): \(error.localizedDescription)")
             }
         }
@@ -429,7 +428,7 @@ public extension SyncCoordinator {
                 try? await Task.sleep(nanoseconds: 30_000_000_000) // 30s
                 guard let self, !Task.isCancelled else { return }
                 guard self.syncConfiguration.isSyncEnabled else { return }
-                Logger.sync.info("[SyncCoordinator] Executing deferred push after background sync failure...")
+                CDLogCenter.sync.info("[SyncCoordinator] Executing deferred push after background sync failure...")
                 _ = try? await self.pushAllToCloud()
             }
         }
@@ -438,18 +437,18 @@ public extension SyncCoordinator {
     /// 拉取所有订阅 Zone 的云端数据到本地
     func pullAllRecordFromCloud() async throws {
         guard syncConfiguration.isSyncEnabled else {
-            Logger.sync.info("[SyncCoordinator] pullAllRecordFromCloud skipped (sync disabled)")
+            CDLogCenter.sync.info("[SyncCoordinator] pullAllRecordFromCloud skipped (sync disabled)")
             return
         }
         
-        Logger.sync.info("[SyncCoordinator] pullAllRecordFromCloud: \(self.subscriptionToConfigs.count) subscription(s) to process")
+        CDLogCenter.sync.info("[SyncCoordinator] pullAllRecordFromCloud: \(self.subscriptionToConfigs.count) subscription(s) to process")
         
         for (subscriptionID, config) in subscriptionToConfigs {
-            Logger.sync.info("[SyncCoordinator] Pulling records for subscription: \(subscriptionID), zone: \(config.zoneName)")
+            CDLogCenter.sync.info("[SyncCoordinator] Pulling records for subscription: \(subscriptionID), zone: \(config.zoneName)")
             try await pullRecords(of: subscriptionID)
         }
         
-        Logger.sync.info("[SyncCoordinator] pullAllRecordFromCloud completed")
+        CDLogCenter.sync.info("[SyncCoordinator] pullAllRecordFromCloud completed")
     }
 
     /// 拉取云端的变动数据到本地（响应 CloudKit 通知）
@@ -533,7 +532,7 @@ public extension SyncCoordinator {
 
     private func pullRecords(of subscriptionID: CKSubscription.ID) async throws {
         guard let config = subscriptionToConfigs[subscriptionID] else {
-            Logger.sync.warning("[SyncCoordinator] No config found for subscription: \(subscriptionID)")
+            CDLogCenter.sync.warn("[SyncCoordinator] No config found for subscription: \(subscriptionID)")
             return
         }
 
@@ -545,7 +544,7 @@ public extension SyncCoordinator {
         var newRecords: [CKRecord] = []
         var receivedDeletions: [CKDatabase.RecordZoneChange.Deletion] = []
 
-        Logger.sync.info("[SyncCoordinator] pullRecords zone=\(config.zoneName), hasToken=\(lastChangeToken != nil)")
+        CDLogCenter.sync.info("[SyncCoordinator] pullRecords zone=\(config.zoneName), hasToken=\(lastChangeToken != nil)")
 
         // ========================================
         // 步骤2: 循环拉取所有变更数据
@@ -568,10 +567,10 @@ public extension SyncCoordinator {
             lastChangeToken = changes.changeToken
             awaitingChanges = changes.moreComing
 
-            Logger.sync.info("[SyncCoordinator] Batch fetched \(changedRecords.count) records, \(changes.deletions.count) deletions, moreComing=\(changes.moreComing)")
+            CDLogCenter.sync.info("[SyncCoordinator] Batch fetched \(changedRecords.count) records, \(changes.deletions.count) deletions, moreComing=\(changes.moreComing)")
         }
 
-        Logger.sync.info("[SyncCoordinator] Pull complete for zone=\(config.zoneName): total \(newRecords.count) records, \(receivedDeletions.count) deletions")
+        CDLogCenter.sync.info("[SyncCoordinator] Pull complete for zone=\(config.zoneName): total \(newRecords.count) records, \(receivedDeletions.count) deletions")
 
         // ========================================
         // 步骤3: 保存新的 Change Token
@@ -589,7 +588,7 @@ public extension SyncCoordinator {
         // 合并所有涉及的 recordType（去重）
         let recordTypes = Set(Array(newRecordsMap.keys) + Array(deletionsMap.keys))
 
-        Logger.sync.info("[SyncCoordinator] Distributing to \(recordTypes.count) record type(s): \(recordTypes.joined(separator: ", "))")
+        CDLogCenter.sync.info("[SyncCoordinator] Distributing to \(recordTypes.count) record type(s): \(recordTypes.joined(separator: ", "))")
 
         // ========================================
         // 步骤5: 分发数据到对应的 Store
@@ -599,12 +598,12 @@ public extension SyncCoordinator {
                 let records = newRecordsMap[recordType] ?? []
                 let deletions = deletionsMap[recordType] ?? []
 
-                Logger.sync.info("[SyncCoordinator] Distributing to \(recordType): \(records.count) records, \(deletions.count) deletions")
+                CDLogCenter.sync.info("[SyncCoordinator] Distributing to \(recordType): \(records.count) records, \(deletions.count) deletions")
 
                 // 调用 Store 的更新方法，处理数据
                 try await store.updateChanged(records: records, deletions: deletions)
             } else {
-                Logger.sync.warning("[SyncCoordinator] No store found for recordType: \(recordType)")
+                CDLogCenter.sync.warn("[SyncCoordinator] No store found for recordType: \(recordType)")
             }
         }
     }

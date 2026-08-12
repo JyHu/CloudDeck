@@ -5,7 +5,6 @@
 //  Created by hujinyou on 2026/6/10.
 //
 
-import OSLog
 import GRDB
 import CloudKit
 
@@ -58,7 +57,7 @@ extension SyncableStore {
     ///   - 数据库错误（查询或写入失败）
     ///   - 数据转换错误（CKRecord 转 Model 失败）
     func updateChanged(records: [CKRecord], deletions: [CKDatabase.RecordZoneChange.Deletion]) async throws {
-        Logger.sync.info("[Store] updateChanged for \(ModelType.recordType): \(records.count) records, \(deletions.count) deletions")
+        CDLogCenter.sync.info("[Store] updateChanged for \(ModelType.recordType): \(records.count) records, \(deletions.count) deletions")
         
         // ========================================
         // 步骤1: 查询本地已存在的对应数据
@@ -73,7 +72,7 @@ extension SyncableStore {
         let localsMap = locals.toMap { $0.id }
         let deletionIDs = deletions.map { $0.recordID.recordName }
         
-        Logger.sync.info("[Store] \(ModelType.recordType): \(locals.count) existing local record(s), \(deletionIDs.count) deletion ID(s)")
+        CDLogCenter.sync.info("[Store] \(ModelType.recordType): \(locals.count) existing local record(s), \(deletionIDs.count) deletion ID(s)")
         
         // ========================================
         // 步骤2: 根据冲突规则过滤要接受的远端记录
@@ -105,7 +104,7 @@ extension SyncableStore {
                 // 拒绝远端更新，保护用户的删除意图
                 // 下次 pushToCloud() 时会将删除操作同步到云端
                 if local.isDeleted {
-                    Logger.cloud.info("Skipping remote update for \(record.recordID.recordName) - local is deleted")
+                    CDLogCenter.cloud.info("Skipping remote update for \(record.recordID.recordName) - local is deleted")
                     return false
                 }
                 
@@ -121,7 +120,7 @@ extension SyncableStore {
                 // - 即使远端数据更新，也不能覆盖用户的修改
                 // - 等用户完成编辑并推送后，再同步
                 if !local.isSynced {
-                    Logger.cloud.info("Skipping remote update for \(record.recordID.recordName) - local has unsynced changes")
+                    CDLogCenter.cloud.info("Skipping remote update for \(record.recordID.recordName) - local has unsynced changes")
                     return false
                 }
                 
@@ -139,7 +138,7 @@ extension SyncableStore {
                     if local.updateAt > modificationDate {
                         // 本地时间更新，说明本地版本是基于更新的服务器版本
                         // 拒绝这条远端记录（它是旧版本）
-                        Logger.cloud.debug("Skipping remote update for \(record.recordID.recordName) - local is newer")
+                        CDLogCenter.cloud.debug("Skipping remote update for \(record.recordID.recordName) - local is newer")
                         return false
                     }
                 }
@@ -155,7 +154,7 @@ extension SyncableStore {
             }
         }
         
-        Logger.sync.info("[Store] \(ModelType.recordType) conflict resolution: \(newRecords.count) accepted, \(records.count - newRecords.count) rejected")
+        CDLogCenter.sync.info("[Store] \(ModelType.recordType) conflict resolution: \(newRecords.count) accepted, \(records.count - newRecords.count) rejected")
         
         // ========================================
         // 步骤3: 保存接受的远端记录到本地
@@ -182,11 +181,11 @@ extension SyncableStore {
                 .deleteAll(db)
             
             if deletedCount > 0 {
-                Logger.sync.info("[Store] \(ModelType.recordType): physically deleted \(deletedCount) record(s) from local DB")
+                CDLogCenter.sync.info("[Store] \(ModelType.recordType): physically deleted \(deletedCount) record(s) from local DB")
             }
         }
         
-        Logger.sync.info("[Store] updateChanged completed for \(ModelType.recordType): \(newRecords.count) saved, \(deletionIDs.count) deletions processed")
+        CDLogCenter.sync.info("[Store] updateChanged completed for \(ModelType.recordType): \(newRecords.count) saved, \(deletionIDs.count) deletions processed")
     }
     
     /// 将本地未同步的数据推送到云端
@@ -253,7 +252,7 @@ extension SyncableStore {
     func pushToCloud(pullFirst: Bool = true, retryOnConflict: Bool = true) async throws -> SyncResult {
         // 同步关闭时直接返回
         guard syncConfiguration.isSyncEnabled else {
-            Logger.sync.info("[Store] pushToCloud skipped for \(ModelType.recordType) (sync disabled)")
+            CDLogCenter.sync.info("[Store] pushToCloud skipped for \(ModelType.recordType) (sync disabled)")
             return SyncResult(saved: 0, deleted: 0, failed: 0)
         }
 
@@ -321,7 +320,7 @@ extension SyncableStore {
         // - 重新推送（基于版本 B 的修改）
         // - 最多重试一次，避免无限循环
         if result.failed > 0 && retryOnConflict {
-            Logger.cloud.info("Detected conflicts, retrying push for \(recordType)")
+            CDLogCenter.cloud.info("Detected conflicts, retrying push for \(recordType)")
             
             // 重新拉取，解决冲突
             try await pullLatestChanges()
@@ -552,11 +551,11 @@ extension SyncableStore {
                        ckError.code == .serverRecordChanged {
                         // 警告级别：这是预期内的冲突，不是严重错误
                         // 调用者会根据 retryOnConflict 参数决定是否重试
-                        Logger.cloud.warning("Server record changed for \(recordID.recordName), will retry")
+                        CDLogCenter.cloud.warn("Server record changed for \(recordID.recordName), will retry")
                     } else {
                         // 其他错误（网络、权限、数据格式等）
                         // 错误级别：需要人工介入或用户重试
-                        Logger.cloud.error("Save record failed: \(recordID.recordName), error: \(error)")
+                        CDLogCenter.cloud.error("Save record failed: \(recordID.recordName), error: \(error)")
                     }
                     
                     // 无论哪种错误，都计入失败数
@@ -592,10 +591,10 @@ extension SyncableStore {
                     // 可能原因：其他设备也尝试删除，或者恢复了数据
                     if let ckError = error as? CKError,
                        ckError.code == .serverRecordChanged {
-                        Logger.cloud.warning("Server record changed for \(recordID.recordName), will retry")
+                        CDLogCenter.cloud.warn("Server record changed for \(recordID.recordName), will retry")
                     } else {
                         // 其他错误（网络、权限等）
-                        Logger.cloud.error("Delete record failed: \(recordID.recordName), error: \(error)")
+                        CDLogCenter.cloud.error("Delete record failed: \(recordID.recordName), error: \(error)")
                     }
                     
                     // 计入失败数

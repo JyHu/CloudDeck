@@ -3,7 +3,6 @@
 //  CloudDeck
 //
 
-import OSLog
 /// SyncCoordinator 的 CRUD 扩展
 ///
 /// 该扩展仅负责路由：按 `recordType` 分组后转发到对应 `SyncableStore`。
@@ -17,7 +16,7 @@ extension SyncCoordinator {
 
     public func save(_ models: [any SyncableProtocol]) async throws {
         guard !models.isEmpty else {
-            Logger.sync.debug("[CRUD] save called with empty models, skipping.")
+            CDLogCenter.sync.debug("[CRUD] save called with empty models, skipping.")
             return
         }
 
@@ -38,7 +37,7 @@ extension SyncCoordinator {
 
     public func delete(_ models: [any SyncableProtocol]) async throws {
         guard !models.isEmpty else {
-            Logger.sync.debug("[CRUD] delete called with empty models, skipping.")
+            CDLogCenter.sync.debug("[CRUD] delete called with empty models, skipping.")
             return
         }
 

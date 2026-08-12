@@ -4,7 +4,6 @@
 //
 
 import GRDB
-import OSLog
 import CloudKit
 
 /// 本地数据库管理对象，封装所有 GRDB（SQLite）数据库操作
@@ -94,7 +93,7 @@ public extension GRDBStore {
         } catch {
             // 缓存失败只记录错误，不抛出异常
             // 不影响同步流程，最坏情况下次全量拉取
-            Logger.grdb.error("Cache CKServerChangeToken failed for subscriptionID: \(subscriptionID), error: \(error)")
+            CDLogCenter.grdb.error("Cache CKServerChangeToken failed for subscriptionID: \(subscriptionID), error: \(error)")
         }
     }
     
@@ -129,7 +128,7 @@ public extension GRDBStore {
             }
         } catch {
             // 查询失败记录错误，返回 nil（降级为全量拉取）
-            Logger.grdb.error("Query CKServerChangeToken failed for subscriptionID: \(subscriptionID), error: \(error)")
+            CDLogCenter.grdb.error("Query CKServerChangeToken failed for subscriptionID: \(subscriptionID), error: \(error)")
         }
         
         return nil

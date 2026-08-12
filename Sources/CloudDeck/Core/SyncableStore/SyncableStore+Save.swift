@@ -6,7 +6,6 @@
 //
 
 import GRDB
-import OSLog
 
 public extension SyncableStore {
     // Entry contract:
@@ -27,7 +26,7 @@ public extension SyncableStore {
     func saveAll(_ models: [ModelType]) async throws {
         var mutableModels = models
 
-        Logger.sync.info("[Store] Batch saving \(models.count) \(ModelType.recordType)(s) ...")
+        CDLogCenter.sync.info("[Store] Batch saving \(models.count) \(ModelType.recordType)(s) ...")
 
         let syncEnabled = syncConfiguration.isSyncEnabled
         let backgroundSync = syncConfiguration.performSyncInBackground
@@ -43,7 +42,7 @@ public extension SyncableStore {
                     try model.save(db)
                 }
             }
-            Logger.grdb.info("[Store] Batch saved \(newModels.count) \(ModelType.recordType)(s) locally (sync disabled)")
+            CDLogCenter.grdb.info("[Store] Batch saved \(newModels.count) \(ModelType.recordType)(s) locally (sync disabled)")
             return
         }
 
@@ -90,7 +89,7 @@ public extension SyncableStore {
 
                             // Skip stale callback write-back when user edited again after enqueue.
                             guard current.updateAt <= localSnapshotUpdateAt else {
-                                Logger.sync.warning("[Store-BG] Skip stale batch sync write-back for \(ModelType.recordType) (id: \(id))")
+                                CDLogCenter.sync.warn("[Store-BG] Skip stale batch sync write-back for \(ModelType.recordType) (id: \(id))")
                                 continue
                             }
 
@@ -100,9 +99,9 @@ public extension SyncableStore {
                         }
                     }
 
-                    Logger.sync.info("[Store-BG] Batch synced \(newModels.count) \(ModelType.recordType)(s)")
+                    CDLogCenter.sync.info("[Store-BG] Batch synced \(newModels.count) \(ModelType.recordType)(s)")
                 } catch {
-                    Logger.cloud.error("[Store-BG] Batch background sync failed: \(error)")
+                    CDLogCenter.cloud.error("[Store-BG] Batch background sync failed: \(error)")
                 }
             }
             return
@@ -122,21 +121,21 @@ public extension SyncableStore {
                         if let serverDate = savedRecord.modificationDate {
                             mutableModels[i].updateAt = serverDate
                         }
-                        Logger.cloud.info("[Store] \(ModelType.recordType) (id: \(mutableModels[i].id)) synced to cloud")
+                        CDLogCenter.cloud.info("[Store] \(ModelType.recordType) (id: \(mutableModels[i].id)) synced to cloud")
                     case .failure(_):
                         mutableModels[i].markModified()
-                        Logger.cloud.error("[Store] Cloud save per-record failed for \(ModelType.recordType) (id: \(mutableModels[i].id))")
+                        CDLogCenter.cloud.error("[Store] Cloud save per-record failed for \(ModelType.recordType) (id: \(mutableModels[i].id))")
                     }
                 } else {
                     mutableModels[i].markSynced()
-                    Logger.cloud.warning("[Store] No per-record result for \(ModelType.recordType) (id: \(mutableModels[i].id)), marking as synced")
+                    CDLogCenter.cloud.warn("[Store] No per-record result for \(ModelType.recordType) (id: \(mutableModels[i].id)), marking as synced")
                 }
             }
         } catch {
             for i in 0..<mutableModels.count {
                 mutableModels[i].markModified()
             }
-            Logger.cloud.error("[Store] Batch cloud sync failed for \(models.count) \(ModelType.recordType)(s): \(error)")
+            CDLogCenter.cloud.error("[Store] Batch cloud sync failed for \(models.count) \(ModelType.recordType)(s): \(error)")
         }
 
         let newModels = mutableModels
@@ -146,6 +145,6 @@ public extension SyncableStore {
             }
         }
 
-        Logger.grdb.info("[Store] Batch saved \(newModels.count) \(ModelType.recordType)(s) to local DB")
+        CDLogCenter.grdb.info("[Store] Batch saved \(newModels.count) \(ModelType.recordType)(s) to local DB")
     }
 }
