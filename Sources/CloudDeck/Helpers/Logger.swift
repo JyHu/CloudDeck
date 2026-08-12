@@ -43,7 +43,7 @@ public enum CDLogLevel: String, Identifiable, Sendable {
 /// - Note: 协议继承 `NSObjectProtocol` 是为了让 `delegate` 可以被
 ///   `weak` 持有；回调在产生日志的线程上**同步执行**（可能是后台
 ///   同步线程），代理内部应避免耗时操作并自行保证线程安全。
-public protocol LoggerDelegate: NSObjectProtocol {
+public protocol CDLoggerDelegate: AnyObject {
     /// 收到一条 CloudDeck 日志。
     ///
     /// - Parameters:
