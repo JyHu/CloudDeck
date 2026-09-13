@@ -25,15 +25,16 @@
 //  @MainActor
 //  @propertyWrapper
 //  struct Query<Request: DBRequest>: DynamicProperty {
-//      @State private var observer: DBObserver<Request.Value>
+//      @State private var observer: DBObserver<Request>
 //
 //      var wrappedValue: Request.Value { observer.value }
 //
 //      init(_ request: Request, default defaultValue: Request.Value) {
 //          _observer = State(initialValue: DBObserver(
 //              dbQueue: AppCenter.shared.coordinator.db.queue,  // 替换为你的 dbQueue 来源
-//              defaultValue: defaultValue
-//          ) { db in try request.fetch(db) })
+//              defaultValue: defaultValue,
+//              request: request
+//          ))
 //      }
 //  }
 //  ```
@@ -227,25 +228,35 @@ public struct FetchCount<T: FetchableRecord & PersistableRecord>: DBRequest {
 /// @MainActor
 /// @propertyWrapper
 /// struct Query<Request: DBRequest>: DynamicProperty {
-///     @State private var observer: DBObserver<Request.Value>
+///     @State private var observer: DBObserver<Request>
 ///
 ///     var wrappedValue: Request.Value { observer.value }
-///     var projectedValue: DBObserver<Request.Value> { observer }
+///     var projectedValue: DBObserver<Request> { observer }
 ///
 ///     init(_ request: Request, default defaultValue: Request.Value) {
 ///         _observer = State(initialValue: DBObserver(
 ///             dbQueue: MyDB.shared.queue,
-///             defaultValue: defaultValue
-///         ) { db in try request.fetch(db) })
+///             defaultValue: defaultValue,
+///             request: request
+///         ))
 ///     }
+/// }
+/// ```
+///
+/// 查询条件随外部状态变化时（如切换孩子后按新 childId 重建查询），
+/// 在视图的 `.task(id:)` 或 `onChange` 中调用 `update(request:)` 换请求即可：
+/// ```swift
+/// .task(id: currentChild?.id) {
+///     guard let child = currentChild else { return }
+///     $results.update(ActiveTasksRequest(childId: child.id))
 /// }
 /// ```
 @Observable
 @MainActor
-public final class DBObserver<Value: Sendable> {
+public final class DBObserver<Request: DBRequest> {
     /// 当前观察到的最新值，数据库变化时自动更新。
-    public var value: Value
-    
+    public var value: Request.Value
+
     /// 当前数据有没有更新过，第一次更新以后就会被设置为true，比如使用的时候：
     /// @DBQuery(xxxx) var results
     /// 那么在业务中可以直接监听这个属性的变化：
@@ -253,6 +264,8 @@ public final class DBObserver<Value: Sendable> {
     /// 来处理数据初次加载的状态变动
     public var hasReceivedInitialValue: Bool = false
 
+    private let dbQueue: DatabaseQueue
+    private let defaultValue: Request.Value
     private var cancellable: AnyDatabaseCancellable?
 
     /// 创建一个数据库观察者。
@@ -260,15 +273,37 @@ public final class DBObserver<Value: Sendable> {
     /// - Parameters:
     ///   - dbQueue: GRDB 数据库队列
     ///   - defaultValue: 初始默认值（在首次数据库回调之前使用）
-    ///   - observation: 数据库查询闭包，每当相关表发生变化时被重新执行
+    ///   - request: 数据库查询请求，每当相关表发生变化时被重新执行
     public init(
         dbQueue: DatabaseQueue,
-        defaultValue: Value,
-        observation: @Sendable @escaping (Database) throws -> Value
+        defaultValue: Request.Value,
+        request: Request
     ) {
+        self.dbQueue = dbQueue
+        self.defaultValue = defaultValue
         self.value = defaultValue
+        start(request)
+    }
 
-        let obs = ValueObservation.tracking(observation)
+    /// 切换查询请求：取消旧观察，按新请求重新订阅。
+    ///
+    /// 适合「查询条件随外部状态变化」的场景（如切换孩子后按新 childId 重建查询）：
+    /// 旧请求的观察会被取消，`value` 先复位为默认值（避免短暂展示上一份数据），
+    /// 然后立即按新请求重新执行一次查询并持续观察。
+    public func update(request: Request) {
+        cancellable?.cancel()
+        cancellable = nil
+        value = defaultValue
+        hasReceivedInitialValue = false
+        start(request)
+    }
+
+    private func start(_ request: Request) {
+        let obs = ValueObservation.tracking { db in
+            try request.fetch(db)
+        }
+        // 用 @MainActor 版 start：onChange/onError 保证在主 actor 回调，
+        // 避免后台队列直接写 @MainActor 的 value/hasReceivedInitialValue（update 换请求时竞态窗口更大）
         self.cancellable = obs.start(
             in: dbQueue,
             onError: { error in
